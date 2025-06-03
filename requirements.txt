@@ -3,3 +3,8 @@ pandas
 requests
 python-dotenv
 streamlit
+joblib
+seaborn
+matplotlib
+numpy
+prophet
