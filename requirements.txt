@@ -8,3 +8,7 @@ seaborn
 matplotlib
 numpy
 prophet
+timeout-decorator
+pyarrow
+dask
+
