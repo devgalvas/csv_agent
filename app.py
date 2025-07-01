@@ -1,4 +1,5 @@
 import os
+import glob
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -13,9 +14,33 @@ import time
 
 class App:
     def __init__(self, title: str, **page_config):
+        """Initialize the Streamlit application with styling and configuration."""
+        # Set up page configuration
         st.set_page_config(page_title=title, **page_config)
-
-        # Custom CSS for a modern look
+        
+        # Apply custom styling
+        self._apply_custom_styling()
+        
+        # Set up header layout
+        self._create_header(title)
+        
+        # Initialize environment and API key
+        load_dotenv()
+        self.api_key = os.getenv("API_KEY")
+        
+        # Initialize sidebar
+        self._create_sidebar()
+        
+        # Initialize class variables
+        self.agent = CSVAgent(api_key=self.api_key)
+        self.data_loader = None
+        self.predictive_model = None
+        self.df = None
+        self.columns = []
+        self.file_path = None
+        
+    def _apply_custom_styling(self):
+        """Apply custom CSS styling to the application."""
         st.markdown("""
         <style>
         body, .main {
@@ -49,7 +74,7 @@ class App:
             background-color: #112240;
             color: #e3f0fc;
         }
-        .css-1v0mbdj, .css-1d391kg { /* Sidebar */
+        .css-1v0mbdj, .css-1d391kg {
             background: #112240 !important;
             color: #e3f0fc !important;
         }
@@ -59,253 +84,280 @@ class App:
         footer {visibility: hidden;}
         </style>
         """, unsafe_allow_html=True)
-
-        # Layout: logo and title in columns
+        
+    def _create_header(self, title):
+        """Create header with logo and title."""
         col1, col2 = st.columns([1, 5])
         with col1:
             st.image("/home/lucas/UNIFEI/Vertis/vertis_research_agent/image/chatbot.webp", width=90)
         with col2:
-            st.title(f"📊 {title}")
-            st.caption("🚀 A Streamlit chatbot powered by Groq to consult .CSV files")
+            st.markdown(f'<h1 style="color:#64ffda;">📊 {title}</h1>', unsafe_allow_html=True)
+            st.caption('<span style="color:#e3f0fc;">🚀 A Streamlit chatbot powered by Groq to consult .CSV files</span>', 
+                      unsafe_allow_html=True)
 
-        load_dotenv()
-        api_key = os.getenv("API_KEY")
-
-        # Sidebar for file upload and options
+    def _create_sidebar(self):
+        """Create sidebar with upload and options."""
         with st.sidebar:
             st.header("Upload & Options")
-            self.uploaded_file = st.file_uploader("Upload a CSV file (supports up to 50GB)", type="csv")
-            self.show_data = st.checkbox("🔍 Show raw data (sample of 50 rows)")
+            
+            # File upload options
+            self.uploaded_file = st.file_uploader("Upload a CSV file", type="csv")
+            
+            # Data directory options
+            self.namespace_dir = st.text_input("Parquet Directory", 
+                                              "/home/lucas/UNIFEI/Vertis/vertis_research_agent/archive/partitioned_parquet")
+            
+            # Namespace selection if directory exists
+            if self.namespace_dir and os.path.exists(self.namespace_dir):
+                namespaces = ["All"] + [d for d in os.listdir(self.namespace_dir) 
+                                       if os.path.isdir(os.path.join(self.namespace_dir, d))]
+                self.namespace = st.selectbox("Select Namespace", namespaces)
+            else:
+                self.namespace = None
+            
+            self.show_data = st.checkbox("🔍 Show raw data")
+            
             st.markdown("---")
-            st.info("Made by Lucas Galvão Freitas](https://github.com/devgalvas)")
-
-        self.agent = CSVAgent(api_key=api_key)
-        self.data_loader = None
-        self.predictive_model = None
-        self.csv_path = None
-        self.columns = []
-
-    def plot_top_namespaces(self, df, metric, top_n=5):
-        df_sorted = df.sort_values(by=metric, ascending=False)
-        top_over = df_sorted.head(top_n)
-        top_under = df_sorted.tail(top_n)
+            st.info("Made by [Lucas Galvão Freitas](https://github.com/devgalvas)")
+    
+    def _handle_file_upload(self):
+        """Handle CSV file upload."""
+        if self.uploaded_file:
+            self.agent.load_csv(self.uploaded_file)
+            st.success("✅ CSV file loaded successfully!")
+            
+            # Load DataFrame for DataLoader and PredictiveModel
+            self.df = pd.read_csv(self.agent.csv_path)
+            self.columns = self.df.columns.tolist()
+            
+            return True
+        return False
+            
+    def _handle_parquet_loading(self):
+        """Handle loading Parquet files from directory."""
+        if not self.namespace_dir or not os.path.exists(self.namespace_dir):
+            return False
+            
+        self.file_path = os.path.join(self.namespace_dir, "**", "*.parquet")
         
-        st.subheader(f"TOP {top_n} Namespaces por {metric}")
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.barplot(x=metric, y='NAMESPACE', hue='NAMESPACE', data=pd.concat([top_over, top_under]), palette="coolwarm")
-        ax.set_xlabel(metric)
-        ax.set_ylabel("Namespace")
-        st.pyplot(fig)
+        files_found_by_glob = glob.glob(self.file_path, recursive=True)
+        if not files_found_by_glob:
+            st.warning("No Parquet files found in the specified directory.")
+            st.info("Please check the directory path or upload a CSV file instead.")
+            return False
+        
+        try:
+            # O resto da função permanece igual
+            file_size_mb = sum(os.path.getsize(f) for f in files_found_by_glob) / (1024 * 1024)
+            st.info(f"Carregando {len(files_found_by_glob)} arquivos Parquet de '{self.namespace_dir}'... Tamanho total: {file_size_mb:.2f} MB")
+            start_time = time.time()
+            
+            # O self.file_path agora contém o padrão glob, que será passado para o DataLoader
+            self.data_loader = DataLoader(self.file_path, samples=50, query="SELECT 1", file_type="parquet")
+            self.data_loader.connect_to_db()
+            
+            with st.spinner("Lendo o schema do Parquet..."):
+                self.columns = self.data_loader.connect.execute("DESCRIBE logs").fetchdf()['column_name'].tolist()
+                
+            st.success(f"✅ Parquet carregado com sucesso em {time.time() - start_time:.2f} segundos! "
+                     f"Colunas: {len(self.columns)}")
+            return True
+            
+        except Exception as e:
+            st.error(f"Falha ao processar Parquet: {str(e)}")
+            return False
+
+
+    def _show_data_sample(self):
+        """Show a sample of the data."""
+        if not self.show_data:
+            return
+            
+        st.subheader("Raw Data (Sample)")
+        with st.spinner("Fetching sample data..."):
+            if self.uploaded_file:
+                sample_df = self.df.head(100)
+            else:
+                sample_df = self.data_loader.get_sample()
+                
+            if sample_df.empty:
+                st.warning("Sample data is empty.")
+            else:
+                st.dataframe(sample_df)
+    
+    def _qa_section(self):
+        """Display Q&A section."""
+        st.markdown('<p style="font-size:18px;color:#64ffda;font-weight:bold;">Ask a question about your data:</p>', 
+                   unsafe_allow_html=True)
+        question = st.text_input("Query", placeholder="e.g., Which rows have missing values?")
+        
+        if st.button("Ask"):
+            if question.strip() == "":
+                st.warning("Please type a question.")
+            else:
+                with st.spinner("Thinking..."):
+                    answer = self.agent.ask(question)
+                    st.markdown("**🧠 Answer:**")
+                    if isinstance(answer, pd.DataFrame):
+                        st.dataframe(answer)
+                    else:
+                        st.write(answer)
+    
+    def _predictive_modeling_section(self):
+        """Display predictive modeling section."""
+        with st.expander("🤖 Predictive Modeling"):
+            st.markdown("Train a model on your data and make predictions")
+            
+            # Model parameters
+            target_column = st.selectbox("Select a target column", self.columns)
+            model_type = st.selectbox("Model Type:", ["linear", "random_forest", "prophet"])
+            
+            # Segmentation options (for parquet data)
+            if self.data_loader:
+                segment_column = st.selectbox("Segment by:", ["None", "ocnr_tx_namespace"])
+                segment_values = ["None"] if segment_column == "None" else self.data_loader.connect.execute(
+                    f"SELECT DISTINCT {segment_column} FROM logs LIMIT 100").fetchdf()[segment_column].tolist()
+                segment_value = st.selectbox("Segment value:", segment_values)
+                
+                model_path = f"model_{target_column}_{self.namespace}_{segment_value}.joblib" \
+                    if self.namespace != "All" and segment_column != "None" \
+                    else f"model_{target_column}_{self.namespace}.joblib" \
+                    if self.namespace != "All" else f"model_{target_column}.joblib"
+            else:
+                segment_column = "None"
+                segment_value = "None"
+                model_path = f"model_{target_column}.joblib"
+            
+            # Train model button
+            if st.button("Train Model"):
+                self._train_model(target_column, model_type, model_path, segment_column, segment_value)
+            
+            # Plot model performance button
+            if st.button("Plot Model Performance"):
+                self._plot_model_performance(model_type)
+    
+    def _train_model(self, target_column, model_type, model_path, segment_column, segment_value):
+        """Train a predictive model."""
+        try:
+            # Initialize model
+            self.predictive_model = PredictiveModel(model_path, model_type)
+            
+            # Get data for training
+            if self.uploaded_file:
+                train_df = self.df
+            else:
+                # For parquet data
+                query = f"SELECT * FROM logs"
+                if segment_column != "None" and segment_value != "None":
+                    query += f" WHERE {segment_column} = '{segment_value}'"
+                query += " LIMIT 10000"  # Limit rows for performance
+                
+                with st.spinner("Fetching data for training..."):
+                    train_df = self.data_loader.connect.execute(query).fetchdf()
+                
+            # Train model
+            with st.spinner("Training model... this may take a while"):
+                if segment_column != "None" and segment_value != "None":
+                    self.predictive_model.train(train_df, target_column, segment_column, segment_value)
+                else:
+                    self.predictive_model.train(train_df, target_column)
+                
+            # Show metrics
+            st.success("Model trained successfully!")
+            st.write("Metrics:", self.predictive_model.metrics)
+            
+        except Exception as e:
+            st.error(f"Error training model: {str(e)}")
+    
+    def _plot_model_performance(self, model_type):
+        """Plot model performance metrics."""
+        if not hasattr(self, 'predictive_model') or self.predictive_model is None:
+            st.error("No model available. Please train a model first.")
+            return
+        
+        try:
+            with st.spinner("Generating model performance plots..."):
+                if model_type == "random_forest":
+                    # Classification metrics
+                    if hasattr(self.predictive_model, 'y_test') and hasattr(self.predictive_model, 'y_pred'):
+                        # Confusion Matrix
+                        st.subheader("Confusion Matrix")
+                        fig, ax = plt.subplots(figsize=(8, 6))
+                        cm = confusion_matrix(self.predictive_model.y_test, self.predictive_model.y_pred)
+                        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
+                        ax.set_xlabel("Predicted")
+                        ax.set_ylabel("True")
+                        st.pyplot(fig)
+                        
+                        # Performance metrics bar chart
+                        st.subheader("Performance Metrics")
+                        metrics_df = pd.DataFrame({
+                            'Metric': list(self.predictive_model.metrics.keys()),
+                            'Value': list(self.predictive_model.metrics.values())
+                        })
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        sns.barplot(x='Metric', y='Value', data=metrics_df, ax=ax)
+                        ax.set_ylim(0, 1)  # Metrics are typically between 0 and 1
+                        plt.xticks(rotation=45)
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        
+                elif model_type == "linear":
+                    # Regression metrics
+                    if hasattr(self.predictive_model, 'y_test') and hasattr(self.predictive_model, 'y_pred'):
+                        # True vs Predicted plot
+                        st.subheader("True vs Predicted Values")
+                        fig, ax = plt.subplots(figsize=(8, 8))
+                        ax.scatter(self.predictive_model.y_test, self.predictive_model.y_pred, alpha=0.5)
+                        ax.plot([min(self.predictive_model.y_test), max(self.predictive_model.y_test)], 
+                                [min(self.predictive_model.y_test), max(self.predictive_model.y_test)], 
+                                'r--', lw=2)
+                        ax.set_xlabel("True Values")
+                        ax.set_ylabel("Predictions")
+                        ax.set_title("True vs Predicted Values")
+                        st.pyplot(fig)
+                        
+                        # Residuals plot
+                        residuals = self.predictive_model.y_test - self.predictive_model.y_pred
+                        st.subheader("Residuals Plot")
+                        fig, ax = plt.subplots(figsize=(8, 6))
+                        ax.scatter(self.predictive_model.y_pred, residuals, alpha=0.5)
+                        ax.axhline(y=0, color='r', linestyle='--')
+                        ax.set_xlabel("Predicted Values")
+                        ax.set_ylabel("Residuals")
+                        ax.set_title("Residuals vs Predicted Values")
+                        st.pyplot(fig)
+                        
+                        # Performance metrics
+                        st.subheader("Performance Metrics")
+                        metrics_df = pd.DataFrame({
+                            'Metric': list(self.predictive_model.metrics.keys()),
+                            'Value': list(self.predictive_model.metrics.values())
+                        })
+                        st.table(metrics_df)
+                else:
+                    st.info(f"Plotting not yet implemented for model type: {model_type}")
+            
+        except Exception as e:
+            st.error(f"Failed to generate plots: {str(e)}")
 
     def run(self):
+        """Run the Streamlit application."""
+        # Handle data sources
+        data_loaded = False
+        
         if self.uploaded_file:
-            # Verificar tamanho do arquivo
-            file_size_mb = self.uploaded_file.size / (1024 * 1024)  # Converter bytes para MB
-            if file_size_mb > 50000:
-                st.error("File size exceeds 50 GB limit. Please use a smaller file or process locally.")
-                return
-
-            st.info(f"Uploading file... Size: {file_size_mb:.2f} MB")
-            start_time = time.time()
-
-            try:
-                # Salvar o arquivo temporariamente
-                self.csv_path = f"temp_{self.uploaded_file.name}"
-                with open(self.csv_path, "wb") as f:
-                    f.write(self.uploaded_file.getbuffer())
-
-                # Inicializar DataLoader sem consulta inicial pesada
-                self.data_loader = DataLoader(self.csv_path, samples=50, query="SELECT 1")  # Consulta leve
-                self.data_loader.connect_to_db()
-
-                # Obter colunas do CSV usando DuckDB
-                with st.spinner("Reading CSV schema..."):
-                    self.columns = self.data_loader.connect.execute("DESCRIBE logs").fetchdf()['column_name'].tolist()
-                st.success(f"✅ CSV loaded successfully in {time.time() - start_time:.2f} seconds! Columns: {len(self.columns)}")
-
-                if self.show_data:
-                    st.subheader("Raw Data (Sample)")
-                    with st.spinner("Fetching sample data..."):
-                        sample_df = self.data_loader.connect.execute("SELECT * FROM logs LIMIT 50").fetchdf()
-                        if sample_df.empty:
-                            st.warning("Sample data is empty.")
-                        else:
-                            st.dataframe(sample_df)
-
-                st.markdown('<p style="font-size:18px;color:#2E86C1;">Ask a question about your data:</p>', unsafe_allow_html=True)
-                question = st.text_input("", placeholder="e.g., Which rows have missing values?")
-
-                if st.button("Ask"):
-                    if question.strip() == "":
-                        st.warning("Please type a question.")
-                    else:
-                        with st.spinner("Thinking..."):
-                            answer = self.agent.ask(question)
-                            st.markdown("**🧠 Answer:**")
-                            if isinstance(answer, pd.DataFrame):
-                                st.dataframe(answer)
-                            else:
-                                st.write(answer)
-
-                with st.expander("🤖 Predictive Modeling"):
-                    st.markdown("Train a model on your data and make predictions")
-                    target_column = st.selectbox("Select a target column", self.columns)
-                    model_type = st.selectbox("Model Type:", ["linear", "random_forest", "prophet"])
-                    segment_column = st.selectbox("Segment by:", ["None", "NAMESPACE", "CLUSTER"])
-                    segment_values = ["None"] if segment_column == "None" else self.data_loader.connect.execute(f"SELECT DISTINCT {segment_column} FROM logs LIMIT 100").fetchdf()[segment_column].tolist()
-                    segment_value = st.selectbox("Segment value:", segment_values)
-                    model_path = f"model_{target_column}_{segment_column}_{segment_value}.joblib" if segment_column != "None" else "model.joblib"
-
-                    if st.button("Train Model"):
-                        try:
-                            self.predictive_model = PredictiveModel(model_path, model_type)
-                            with st.spinner("Training ... this can take a while"):
-                                if segment_column != "None":
-                                    if segment_value == "None":
-                                        st.error("Please select a valid segment value.")
-                                        return
-                                    query = f"SELECT * FROM logs WHERE {segment_column} = '{segment_value}'"
-                                else:
-                                    query = "SELECT * FROM logs LIMIT 100000"  # Limitar para evitar sobrecarga
-                                df = self.data_loader.connect.execute(query).fetchdf()
-                                if df.empty:
-                                    st.error(f"No data found for {segment_column} = {segment_value}")
-                                    return
-                                self.predictive_model.train(df, target_column, segment_column, segment_value)
-                                st.success("Model trained!")
-                                st.write("Metrics: ", self.predictive_model.metrics)
-                                
-                                if model_type == "random_forest":
-                                    st.subheader("Confusion Matrix")
-                                    fig, ax = plt.subplots()
-                                    cm = confusion_matrix(self.predictive_model.y_test, self.predictive_model.y_pred)
-                                    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=ax)
-                                    ax.set_xlabel("Predicted")
-                                    ax.set_ylabel("True")
-                                    st.pyplot(fig)
-                                    st.subheader("Precision, Recall, F1, Accuracy")
-                                    st.bar_chart(pd.DataFrame(self.predictive_model.metrics, index=["Score"]).T)
-                                elif model_type == "linear":
-                                    st.subheader("Predicted vs True Values")
-                                    fig, ax = plt.subplots()
-                                    ax.scatter(self.predictive_model.y_test, self.predictive_model.y_pred, color="skyblue")
-                                    ax.plot(self.predictive_model.y_test, self.predictive_model.y_test, color="red", linestyle="--")
-                                    ax.set_xlabel("True Values")
-                                    ax.set_ylabel("Predicted Values")
-                                    st.pyplot(fig)
-                                elif model_type == "prophet":
-                                    st.subheader("Forecast")
-                                    st.dataframe(self.predictive_model.metrics["forecast"])
-                        except ValueError as e:
-                            st.error(f"Training failed: {str(e)}")
-                        except Exception as e:
-                            st.error(f"Unexpected error during training: {str(e)}")
-
-                    if st.button("Load Model"):
-                        try:
-                            self.predictive_model = PredictiveModel(model_path, model_type)
-                            self.predictive_model.load()
-                            st.success("Model Loaded!")
-                        except FileNotFoundError:
-                            st.error(f"Model file {model_path} not found. Please train the model first.")
-                        except Exception as e:
-                            st.error(f"Failed to load model: {str(e)}")
-
-                    if st.button("Predict on current data"):
-                        if self.predictive_model is None or self.predictive_model.model is None:
-                            st.error("No model loaded. Please train or load a model first.")
-                        else:
-                            with st.spinner("Predicting..."):
-                                if segment_column != "None" and segment_value != "None":
-                                    query = f"SELECT * FROM logs WHERE {segment_column} = '{segment_value}'"
-                                else:
-                                    query = "SELECT * FROM logs LIMIT 100000"
-                                df = self.data_loader.connect.execute(query).fetchdf()
-                                if df.empty:
-                                    st.error(f"No data found for {segment_column} = {segment_value}")
-                                    return
-                                preds = self.predictive_model.predict(df, segment_column, segment_value)
-                                st.write("Predictions: ", preds)
-
-                with st.expander("🔍 Anomaly Detection"):
-                    st.markdown("Detect anomalies in your data (no prior model training required)")
-                    anomaly_column = st.selectbox("Select column for anomaly detection", self.columns)
-                    segment_column_anomaly = st.selectbox("Segment by (anomaly detection):", ["None", "NAMESPACE", "CLUSTER"])
-                    segment_values_anomaly = ["None"] if segment_column_anomaly == "None" else self.data_loader.connect.execute(f"SELECT DISTINCT {segment_column_anomaly} FROM logs LIMIT 100").fetchdf()[segment_column_anomaly].tolist()
-                    segment_value_anomaly = st.selectbox("Segment value (anomaly detection):", segment_values_anomaly)
-                    
-                    if st.button("Detect Anomalies"):
-                        try:
-                            anomaly_model = PredictiveModel("temp.joblib", "isolation_forest")
-                            with st.spinner("Detecting anomalies..."):
-                                if segment_column_anomaly != "None" and segment_value_anomaly != "None":
-                                    query = f"SELECT * FROM logs WHERE {segment_column_anomaly} = '{segment_value_anomaly}' LIMIT 100000"
-                                else:
-                                    query = "SELECT * FROM logs LIMIT 100000"
-                                df = self.data_loader.connect.execute(query).fetchdf()
-                                if df.empty:
-                                    st.error(f"No data found for {segment_column_anomaly} = {segment_value_anomaly}")
-                                    return
-                                if not pd.api.types.is_numeric_dtype(df[anomaly_column]):
-                                    st.error(f"Column {anomaly_column} must be numeric for anomaly detection.")
-                                    return
-                                anomalies = anomaly_model.detect_anomalies(df, anomaly_column, segment_column_anomaly, segment_value_anomaly)
-                                if not anomalies.empty:
-                                    st.subheader("Detected Anomalies")
-                                    st.dataframe(anomalies)
-                                else:
-                                    st.info("No anomalies detected.")
-                        except Exception as e:
-                            st.error(f"Anomaly detection failed: {str(e)}")
-
-                with st.expander("🚨 Alerts"):
-                    st.markdown("Check for critical resource usage (no prior model training required)")
-                    alert_metric = st.selectbox("Select metric for alerts", [col for col in self.columns if "PERCENT" in col])
-                    segment_column_alert = st.selectbox("Segment by (alerts):", ["None", "NAMESPACE", "CLUSTER"])
-                    segment_values_alert = ["None"] if segment_column_alert == "None" else self.data_loader.connect.execute(f"SELECT DISTINCT {segment_column_alert} FROM logs LIMIT 100").fetchdf()[segment_column_alert].tolist()
-                    segment_value_alert = st.selectbox("Segment value (alerts):", segment_values_alert)
-                    
-                    if st.button("Check Alerts"):
-                        try:
-                            alert_model = PredictiveModel("temp.joblib", "isolation_forest")
-                            with st.spinner("Checking alerts..."):
-                                if segment_column_alert != "None" and segment_value_alert != "None":
-                                    query = f"SELECT * FROM logs WHERE {segment_column_alert} = '{segment_value_alert}' LIMIT 100000"
-                                else:
-                                    query = "SELECT * FROM logs LIMIT 100000"
-                                df = self.data_loader.connect.execute(query).fetchdf()
-                                if df.empty:
-                                    st.error(f"No data found for {segment_column_alert} = {segment_value_alert}")
-                                    return
-                                alerts = alert_model.check_alerts(df, alert_metric, threshold=90, segment_column=segment_column_alert, segment_value=segment_value_alert)
-                                if not alerts.empty:
-                                    st.subheader("Critical Alerts")
-                                    st.dataframe(alerts)
-                                else:
-                                    st.info("No critical alerts found.")
-                        except Exception as e:
-                            st.error(f"Alert checking failed: {str(e)}")
-
-                with st.expander("📊 Namespace Analysis"):
-                    st.markdown("Visualize TOP namespaces by resource usage")
-                    metric = st.selectbox("Select metric for visualization", [col for col in self.columns if "PERCENT" in col])
-                    if st.button("Show TOP Namespaces"):
-                        try:
-                            query = f"SELECT NAMESPACE, {metric} FROM logs LIMIT 100000"
-                            df = self.data_loader.connect.execute(query).fetchdf()
-                            if df.empty:
-                                st.error("No data available for visualization.")
-                                return
-                            self.plot_top_namespaces(df, metric)
-                        except Exception as e:
-                            st.error(f"Visualization failed: {str(e)}")
-
-            except Exception as e:
-                st.error(f"Failed to process CSV: {str(e)}")
-                return
-
+            data_loaded = self._handle_file_upload()
+        elif self.namespace_dir and os.path.exists(self.namespace_dir):
+            data_loaded = self._handle_parquet_loading()
         else:
-            st.info("⬅️ Please upload a CSV file to get started.")
+            st.info("⬅️ Please upload a CSV file or specify a Parquet directory to get started.")
+            
+        # If data is loaded, show sections
+        if data_loaded:
+            self._show_data_sample()
+            self._qa_section()
+            self._predictive_modeling_section()
 
 if __name__ == "__main__":
     app = App("Vertis Data Consultant", layout="wide")
