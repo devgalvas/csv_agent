@@ -1,7 +1,7 @@
 import joblib
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, IsolationForest
+from sklearn.ensemble import RandomForestRegressor, IsolationForest
 from prophet import Prophet
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
@@ -23,25 +23,45 @@ class PredictiveModel:
     def preprocess(self, df, target_column=None):
         if df.empty:
             raise ValueError("DataFrame is empty")
-        
+
+        # 1. Colunas que são IDs, chaves ou texto livre e não servem como features
+        cols_to_drop = [
+            'ocnr_cd_id', 'opco_cd_id', 'opcn_cd_id', 'opce_cd_id', 
+            'ocnr_tx_key', 'ocnr_tx_key2', 'ocnr_tx_query', 
+            '__null_dask_index__'
+        ]
+        # O 'errors="ignore"' evita erros caso alguma coluna já não exista
+        df.drop(columns=cols_to_drop, inplace=True, errors='ignore')
+
+        # 2. Processar a coluna de data, que é uma ótima feature
+        if 'ocnr_dt_date' in df.columns:
+            df['ocnr_dt_date'] = pd.to_datetime(df['ocnr_dt_date'])
+            df['hour'] = df['ocnr_dt_date'].dt.hour
+            df['day'] = df['ocnr_dt_date'].dt.day
+            df['month'] = df['ocnr_dt_date'].dt.month
+            df.drop(columns=['ocnr_dt_date'], inplace=True)
+
+        # 3. Remover linhas com valores nulos APÓS o processamento inicial
         df = df.dropna()
-        
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df['hour'] = df['timestamp'].dt.hour
-            df['day'] = df['timestamp'].dt.day
-            df['month'] = df['timestamp'].dt.month
-            df = df.drop(columns=['timestamp'])
-        
+        if df.empty:
+            raise ValueError("DataFrame ficou vazio após a remoção de NaNs. Verifique os dados de entrada.")
+
+        # 4. Aplicar one-hot encoding SOMENTE nas colunas categóricas restantes
         if target_column and target_column in df.columns:
             target_series = df[target_column].copy()
-            categorical_columns = df.select_dtypes(include=['object']).columns.drop(target_column, errors='ignore')
+            # Seleciona colunas de texto, exceto a coluna alvo e 'ocnr_tx_namespace' que já foi usada para segmentar
+            categorical_columns = df.select_dtypes(include=['object']).columns.drop([target_column, 'ocnr_tx_namespace'], errors='ignore')
             df = pd.get_dummies(df, columns=categorical_columns, drop_first=True)
-            df[target_column] = pd.to_numeric(target_series, errors='coerce')  # Forçar conversão numérica
+            # Garante que a coluna alvo seja numérica
+            df[target_column] = pd.to_numeric(target_series, errors='coerce')
         else:
-            categorical_columns = df.select_dtypes(include=['object']).columns
+            categorical_columns = df.select_dtypes(include=['object']).columns.drop(['ocnr_tx_namespace'], errors='ignore')
             df = pd.get_dummies(df, columns=categorical_columns, drop_first=True)
         
+        # Remove a coluna de segmentação do DataFrame de treino
+        if 'ocnr_tx_namespace' in df.columns:
+            df.drop(columns=['ocnr_tx_namespace'], inplace=True)
+
         return df
 
     def train(self, df: pd.DataFrame, target_column: str, segment_column: str = None, segment_value: str = None):
@@ -73,10 +93,14 @@ class PredictiveModel:
 
         if self.model_type == "linear":
             self.model = LinearRegression()
+
         elif self.model_type == "random_forest":
-            self.model = RandomForestClassifier()
+            self.model = RandomForestRegressor(n_estimators=100, random_state=42)
+        
         elif self.model_type == "prophet":
+            
             df_prophet = df[['timestamp', target_column]].rename(columns={'timestamp': 'ds', target_column: 'y'})
+            
             if df_prophet.empty or 'ds' not in df_prophet.columns or 'y' not in df_prophet.columns:
                 raise ValueError("Prophet requires 'timestamp' and target column")
             self.model = Prophet()
@@ -85,6 +109,7 @@ class PredictiveModel:
             forecast = self.model.predict(future)
             self.metrics = {"forecast": forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]}
             joblib.dump(self.model, self.model_path)
+            
             return
 
         self.model.fit(self.X_train, self.y_train)
@@ -102,7 +127,6 @@ class PredictiveModel:
                 "Recall": recall_score(self.y_test, self.y_pred, average="weighted", zero_division=0),
                 "F1": f1_score(self.y_test, self.y_pred, average="weighted", zero_division=0)
             }
-        joblib.dump(self.model, self.model_path)
 
     def load(self):
         self.model = joblib.load(self.model_path)
