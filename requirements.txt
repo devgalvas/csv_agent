@@ -10,5 +10,8 @@ numpy
 prophet
 timeout-decorator
 pyarrow
+xgboost
+lightgbm
+shap
 dask
 
