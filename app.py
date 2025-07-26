@@ -5,9 +5,10 @@ import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 from agent.predictive_model import PredictiveModel
 import streamlit as st
-import duckdb
-import time
 import shap
+import plotly.graph_objects as go
+from sklearn.model_selection import train_test_split
+
 
 @st.cache_resource
 def load_data_and_get_schema(file_path_glob):
@@ -115,54 +116,144 @@ class App:
         else:
             st.error("Falha ao carregar os dados.")
 
-    def _predictive_modeling_section(self):
-        with st.expander("🤖 Modelagem Preditiva com Engenharia de Features", expanded=True):
-            potential_targets = [
-                'NAMESPACE_CPU_USAGE', 'NAMESPACE_MEMORY_USAGE', 'NAMESPACE_POD_COUNT'
-            ]
-            target_column = st.selectbox("Selecione a Métrica Alvo", potential_targets)
-            
-            model_options = ['random_forest', 'lightgbm', 'xgboost', 'linear']
-            model_type = st.selectbox("Tipo de Modelo:", model_options)
-            sample_size = st.slider("Tamanho da amostra para busca de dados", 2000, 50000, 10000, 1000)
+    def _plot_forecast_comparison(self, model_types, target_column, sample_size):
+        data_df = get_pivoted_dataframe_for_training(st.session_state.data_loader, self.namespace_selection, sample_size * 5)
+        
+        if data_df.empty or target_column not in data_df.columns:
+            st.error(f"Não há dados suficientes para a métrica '{target_column}' neste namespace.")
+            return
 
-            # --- MODIFICAÇÃO: Três botões para ações distintas ---
+        # 1. Pré-processar os dados UMA VEZ antes de tudo
+        temp_model_for_preprocessing = PredictiveModel('linear')
+        X, y = temp_model_for_preprocessing.preprocess(data_df.reset_index(), target_column)
+
+        # 2. Dividir os dados JÁ PROCESSADOS em treino e teste
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, shuffle=False)
+
+        results_df = pd.DataFrame(y_test).rename(columns={target_column: 'Valores Reais'})
+
+        with st.spinner("Treinando e avaliando modelos..."):
+            for model_type in model_types:
+                try:
+                    # 3. Treinar cada modelo com o MESMO conjunto de treino limpo
+                    model = PredictiveModel(model_type)
+                    model.train(X_train, y_train)
+                    
+                    # 4. Fazer previsões no MESMO conjunto de teste limpo
+                    model.evaluate(X_test, y_test)
+                    results_df[f'Previsão_{model_type}'] = model.y_pred
+                except Exception as e:
+                    st.warning(f"Falha ao treinar o modelo '{model_type}': {e}")
+        
+        if len(results_df.columns) < 2:
+            st.error("Nenhum modelo foi treinado com sucesso. Não é possível gerar o gráfico.")
+            return
+
+        # 5. Criar o gráfico interativo com Plotly
+        results_df = results_df.sort_index()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=results_df.index, y=results_df['Valores Reais'],
+                                 mode='lines', name='Valores Reais', line=dict(color='royalblue', width=4)))
+        for model_name in results_df.columns[1:]:
+            fig.add_trace(go.Scatter(x=results_df.index, y=results_df[model_name],
+                                     mode='lines', name=model_name, line=dict(dash='dot')))
+        fig.update_layout(title=f'Comparativo de Modelos para "{target_column}"',
+                          xaxis_title='Tempo', yaxis_title='Valor da Métrica',
+                          legend_title='Legenda', template='plotly_dark')
+        st.success("Gráfico comparativo gerado com sucesso!")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- SEÇÃO DE MODELAGEM UNIFICADA COM ABAS (TABS) ---
+    def _predictive_modeling_section(self):
+        st.header("🤖 Análise Preditiva")
+        
+        tab1, tab2 = st.tabs(["📊 Comparação de Modelos", "🧠 Treino e Diagnóstico Individual"])
+
+        with tab1:
+            st.markdown("#### Compare a performance de múltiplos modelos ao longo do tempo")
+            model_options_comp = ['random_forest', 'lightgbm', 'xgboost', 'linear', 'ridge', 'lasso']
+            selected_models = st.multiselect("Selecione os modelos para comparar:", model_options_comp, default=['lightgbm', 'xgboost'])
+            target_column_comp = st.selectbox("Selecione a Métrica Alvo para Comparação", ['NAMESPACE_CPU_USAGE', 'NAMESPACE_MEMORY_USAGE'])
+            sample_size_comp = st.slider("Tamanho da amostra para busca de dados", 1000, 10000, 2000, 500)
+            if st.button("Gerar Gráfico Comparativo"):
+                self._plot_forecast_comparison(selected_models, target_column_comp, sample_size_comp)
+
+        with tab2:
+            st.markdown("#### Treine um único modelo e analise seus resultados em detalhe")
+            potential_targets = ['NAMESPACE_CPU_USAGE', 'NAMESPACE_MEMORY_USAGE', 'NAMESPACE_POD_COUNT']
+            target_column = st.selectbox("Selecione a Métrica Alvo", potential_targets, key="individual_target")
+            
+            model_options_ind = ['random_forest', 'lightgbm', 'xgboost', 'linear']
+            model_type = st.selectbox("Tipo de Modelo:", model_options_ind, key="individual_model")
+            sample_size = st.slider("Tamanho da amostra para treino", 2000, 50000, 10000, 1000, key="individual_sample")
+
             col1, col2, col3 = st.columns(3)
             with col1:
-                if st.button("Treinar Modelo"):
+                if st.button("Treinar Modelo Individual"):
                     self._train_model(target_column, model_type, sample_size)
             with col2:
                 if st.button("Plotar Performance Básica"):
                     self._plot_model_performance()
             with col3:
-                # --- NOVO BOTÃO ---
                 if st.button("Plotar Diagnósticos Avançados"):
                     self._plot_advanced_diagnostics()
 
+
     def _train_model(self, target_column, model_type, sample_size):
-        train_df = get_pivoted_dataframe_for_training(st.session_state.data_loader, self.namespace_selection, sample_size)
+        data_df = get_pivoted_dataframe_for_training(st.session_state.data_loader, self.namespace_selection, sample_size)
         
-        if train_df.empty:
+        if data_df.empty:
             st.error("Não foi possível gerar um DataFrame de features.")
             return
 
         st.write("Amostra do DataFrame de Features (Após PIVOT):")
-        st.dataframe(train_df.head())
+        st.dataframe(data_df.head())
+
+        if target_column not in data_df.columns:
+            st.error(f"Erro: A métrica alvo '{target_column}' não foi encontrada nos dados para o namespace '{self.namespace_selection}'.")
+            return
 
         try:
-            predictive_model = PredictiveModel(model_type)
-            with st.spinner("Treinando modelo com features engenheiradas..."):
-                predictive_model.train(train_df, target_column)
+            model = PredictiveModel(model_type)
+            X, y = model.preprocess(data_df.reset_index(), target_column)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            
+            with st.spinner("Treinando modelo..."):
+                model.train(X_train, y_train)
+                model.evaluate(X_test, y_test)
                 
-            st.session_state.trained_model = predictive_model 
+            st.session_state.trained_model = model
             
             st.success(f"Modelo para '{target_column}' treinado com sucesso!")
             st.write("Métricas de Performance:")
-            st.json(predictive_model.metrics)
+            st.json(model.metrics)
             
         except Exception as e:
             st.error(f"Erro ao treinar o modelo: {e}")
             st.exception(e)
+
+    def _plot_model_performance(self):
+        model = st.session_state.get('trained_model')
+        if not model or not hasattr(model, 'y_test') or model.y_test is None:
+            st.error("Nenhum modelo treinado disponível. Treine um modelo primeiro.")
+            return
+        try:
+            st.subheader("Análise Gráfica da Performance Básica")
+            fig, ax = plt.subplots(1, 2, figsize=(16, 6))
+            sns.scatterplot(x=model.y_test, y=model.y_pred, alpha=0.5, ax=ax[0])
+            ax[0].plot([model.y_test.min(), model.y_test.max()], [model.y_test.min(), model.y_test.max()], 'r--', lw=2)
+            ax[0].set_xlabel("Valores Reais")
+            ax[0].set_ylabel("Valores Preditos")
+            ax[0].set_title("Reais vs. Preditos")
+            residuals = model.y_test - model.y_pred
+            sns.histplot(residuals, kde=True, ax=ax[1])
+            ax[1].set_xlabel("Resíduos (Erro = Real - Predito)")
+            ax[1].set_ylabel("Frequência")
+            ax[1].set_title("Distribuição dos Erros do Modelo")
+            plt.tight_layout()
+            st.pyplot(fig)
+        except Exception as e:
+            st.error(f"Falha ao gerar gráficos: {e}")
 
     def _plot_model_performance(self):
         model = st.session_state.get('trained_model')
@@ -199,7 +290,6 @@ class App:
         model = model_wrapper.model
         model_type = model_wrapper.model_type
         
-        # O SHAP não funciona com modelos lineares simples
         if model_type in ['linear', 'ridge', 'lasso', 'elasticnet']:
             st.warning(f"Diagnósticos avançados (SHAP) não são ideais para o modelo '{model_type}'.")
             st.info("O gráfico de importância de features abaixo mostra os coeficientes do modelo.")
