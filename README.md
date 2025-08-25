@@ -1,234 +1,228 @@
 # Vertis Data Consultant 🤖📊
 
-A modern, interactive data analysis platform built with **Streamlit** that provides advanced analytics for OpenShift monitoring data. Features predictive modeling, natural language querying, and automated data preprocessing using Dask for large-scale CSV processing.
+Plataforma em Streamlit para análise de dados de monitoramento do OpenShift. Foca em:
+- Ingestão eficiente de dados com DuckDB (Parquet/CSV)
+- Pré-processamento massivo com Dask (CSV → Parquet particionado)
+- Modelagem preditiva com scikit-learn, XGBoost e LightGBM
+- Diagnósticos e interpretabilidade com SHAP
+- UI interativa para exploração e treino de modelos
+
+Este README detalha a estrutura do repositório, como configurar o ambiente, preparar os dados e executar a aplicação.
 
 ---
 
-## Features
+## Sumário
 
-### 🔍 Data Analysis & Querying
-- **Upload CSV files** or load **Parquet datasets** (supports large files)
-- **Ask questions in natural language** about your data using LLM integration
-- **Automatic SQL generation** via Groq API for complex queries
-- **DuckDB backend** for fast, efficient data processing
-
-### 🤖 Machine Learning & Predictive Analytics
-- **Predictive modeling** with Random Forest and Linear Regression
-- **Feature engineering** with automatic PIVOT operations
-- **Model performance visualization** with residuals and prediction plots
-- **OpenShift metrics analysis** (CPU, Memory, Pod counts, Network usage)
-
-### ⚡ Big Data Processing
-- **Dask integration** for processing large CSV files (>GB scale)
-- **Automatic partitioning** by namespace for optimized queries
-- **Parquet conversion** for faster subsequent data access
-- **Memory-efficient processing** with configurable block sizes
-
-### 🎨 User Interface
-- **Beautiful dark blue UI** with modern styling
-- **Interactive sidebar** for configuration and data loading
-- **Expandable sections** for organized content display
-- **Real-time progress indicators** and error handling
+- Visão geral da arquitetura
+- Estrutura do repositório
+- Pré-requisitos
+- Configuração do ambiente
+- Pipeline de dados (CSV → Parquet)
+- Executando a aplicação (Streamlit)
+- Uso: análise e modelagem
+- Diagnósticos avançados (Feature Importance e SHAP)
+- Ajustes de desempenho
+- Solução de problemas
+- Referências de arquivos
+- Licença
 
 ---
 
-## Repository Structure
+## Visão geral da arquitetura
+
+Fluxo principal:
+1) CSV bruto → [agent/preprocess.py](agent/preprocess.py) → Parquet particionado por namespace
+2) Parquets → [`agent.data_loader.DataLoader`](agent/data_loader.py) → Tabela logs (DuckDB)
+3) Tabela logs → PIVOT e features → [`agent.predictive_model.PredictiveModel`](agent/predictive_model.py)
+4) Interface Streamlit → [app.py](app.py)
+
+Componentes-chave:
+- Ingestão/consulta: [`agent.data_loader.DataLoader`](agent/data_loader.py)
+- Modelagem: [`agent.predictive_model.PredictiveModel`](agent/predictive_model.py)
+- UI Streamlit principal: [app.py](app.py)
+- Configurações (paths, modelos, alvos): [config.py](config.py)
+- Utilitários/diagnósticos: [analysis.py](analysis.py), [utils.py](utils.py)
+
+Obs.: Integração LLM/Ollama removida do fluxo (não utilizada).
+
+---
+
+## Estrutura do repositório
 
 ```
 vertis_research_agent/
-├── app.py                 # Main Streamlit application
-├── agent/                 # Core analysis modules
+├── app.py                      # Aplicação Streamlit principal
+├── analysis.py                 # Funções auxiliares de análise (opcional)
+├── ui_components.py            # Componentes/modos de UI (opcional)
+├── utils.py                    # Utilitários
+├── config.py                   # Opções de UI, métricas e caminhos padrão
+├── check_duckdb.py             # (Opcional) verificação/diagnóstico do DuckDB
+├── requirements.txt            # Dependências Python
+├── .env                        # Variáveis de ambiente (opcional; não requer API)
+├── agent/
 │   ├── __init__.py
-│   ├── csv_agent.py       # Natural language to SQL conversion
-│   ├── data_loader.py     # DuckDB data loading and querying
-│   ├── predictive_model.py # ML models and training
-│   └── preprocess.py      # Large-scale data preprocessing with Dask
-├── archive/               # Data storage
-│   ├── 00.csv            # Raw input data
-│   └── partitioned_parquet/ # Processed parquet files by namespace
-├── image/                 # UI assets
-├── requirements.txt       # Python dependencies
-├── .env                  # Environment configuration
-└── README.md             # This file
+│   ├── data_loader.py          # DuckDB (CSV/Parquet → tabela logs)
+│   ├── predictive_model.py     # Pré-processamento + treino/avaliação
+│   └── preprocess.py           # Dask (CSV grande → Parquet particionado)
+└── archive/
+    ├── 00.csv                  # CSV bruto (exemplo)
+    └── partitioned_parquet/    # Saída Parquet particionada por ocnr_tx_namespace
 ```
 
 ---
 
-## Screenshots
+## Pré-requisitos
 
-![screenshot](image/chatbot.webp)
+- Python 3.10+
+- Linux: build-essential (para XGBoost/LightGBM), libomp (para LightGBM em algumas distros)
+  - Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y build-essential libgomp1
+- Parquet: pyarrow (já em requirements)
+- Recomendado: virtualenv/venv
+
+Para diagnósticos avançados:
+- SHAP: pip install shap
 
 ---
 
-## Getting Started
+## Configuração do ambiente
 
-### 1. Clone the repository
-
+1) Clonar o repositório
 ```bash
-git clone https://github.com/yourusername/vertis-data-consultant.git
+git clone https://github.com/devgalvas/vertis-data-consultant.git
 cd vertis-data-consultant/vertis_research_agent
 ```
 
-### 2. Install dependencies
-
+2) (Recomendado) Criar ambiente virtual
 ```bash
+python -m venv .venv
+source .venv/bin/activate   # Linux/macOS
+# .venv\Scripts\activate    # Windows (PowerShell)
+```
+
+3) Instalar dependências
+```bash
+pip install --upgrade pip
 pip install -r requirements.txt
+# Para os diagnósticos avançados (se ainda não incluso em requirements):
+pip install shap
 ```
 
-### 3. Set your API key (optional)
+4) Variáveis de ambiente
+- Não é necessário configurar API keys. O arquivo `.env` é opcional.
 
-Create a `.env` file in the project root:
+---
 
-```env
-API_KEY=your_groq_api_key_here
-```
+## Pipeline de dados (CSV → Parquet)
 
-Or export it in your shell:
-
-```bash
-export API_KEY=your_groq_api_key_here
-```
-
-### 4. Data Preprocessing (Must for large CSV files, like the dumps)
-
-If you have a large CSV file to process, first run the preprocessing script:
-
+Use o Dask para converter grandes CSVs para Parquet particionado por namespace:
 ```bash
 python agent/preprocess.py
 ```
 
-This will:
-- Start a Dask client for distributed processing
-- Convert CSV to partitioned Parquet format
-- Clean and transform the data
-- Partition by `ocnr_tx_namespace` for optimized queries
+O script:
+- Lê o CSV de entrada (padrão: archive/00.csv)
+- Normaliza tipos, remove nulos críticos
+- Salva particionado por `ocnr_tx_namespace` em `archive/partitioned_parquet`
 
-### 5. Run the application
+Personalize parâmetros (encoding, blocksize, colunas) diretamente em [agent/preprocess.py](agent/preprocess.py).
 
+---
+
+## Executando a aplicação (Streamlit)
+
+1) Garanta que existem Parquets em `archive/partitioned_parquet/`
+2) Rode a aplicação:
 ```bash
 streamlit run app.py
 ```
+3) No sidebar:
+- Informe o diretório Parquet (padrão em [config.py](config.py): `PARQUET_DEFAULT_PATH`)
+- Selecione um Namespace (ou All)
+- Clique em “🚀 Carregar Dados e Analisar”
 
-The app will be available at `http://localhost:8501`
-
----
-
-## Usage
-
-### Basic Data Analysis
-1. **Configure the data source** in the sidebar:
-   - Set the Parquet directory path (default: `archive/partitioned_parquet`)
-   - Select a specific namespace or "All" for complete dataset
-2. **Load the data** by clicking "🚀 Carregar Dados e Analisar"
-3. **Explore the data** using the "🔍 Mostrar amostra dos dados" option
-
-### Predictive Modeling
-1. **Expand the "🤖 Modelagem Preditiva" section**
-2. **Select target metric**: Choose from CPU usage, Memory usage, or Pod count
-3. **Choose model type**: Random Forest or Linear Regression
-4. **Set sample size**: Adjust based on your computational resources
-5. **Train the model** and view performance metrics
-6. **Visualize results** with scatter plots and residual analysis
-
-### Natural Language Querying (via CSV Agent)
-The [`csv_agent.py`](agent/csv_agent.py) module provides LLM-powered natural language to SQL conversion:
-
-```python
-from agent.csv_agent import CSVAgent
-
-agent = CSVAgent(api_key="your_groq_key")
-agent.load_csv(your_file)
-result = agent.ask("What are the top 5 namespaces by CPU usage?")
-```
+A aplicação criará a tabela `logs` no DuckDB usando [`DataLoader`](agent/data_loader.py).
 
 ---
 
-## Configuration
+## Uso: análise e modelagem
 
-### Environment Variables
-- `API_KEY`: Groq API key for LLM functionality
+A UI de [app.py](app.py) disponibiliza:
+- Carregamento e cache:
+  - `load_data_and_get_schema`: conecta ao DuckDB e obtém schema
+  - `get_namespaces_from_filesystem`: lista namespaces a partir do FS
+  - `get_pivoted_dataframe_for_training`: executa PIVOT e retorna DataFrame “wide” com métricas por timestamp
+- “🤖 Modelagem Preditiva com Engenharia de Features”:
+  - Métrica-alvo (ex.: `NAMESPACE_CPU_USAGE`, `NAMESPACE_MEMORY_USAGE`, `NAMESPACE_POD_COUNT`)
+  - Tipo de modelo (ver [config.py](config.py): `MODEL_OPTIONS`)
+  - Tamanho de amostra para busca de dados
+  - Botões:
+    - “Treinar Modelo”
+    - “Plotar Performance Básica”
+    - “Plotar Diagnósticos Avançados”
 
-### Data Processing Parameters
-The [`preprocess.py`](agent/preprocess.py) script can be configured for:
-- **Encoding**: UTF-16 (default for OpenShift data)
-- **Block size**: 64MB (adjustable for memory constraints)
-- **Partitioning**: By namespace for query optimization
-
-### Model Training Parameters
-- **Sample size**: 2,000 - 50,000 records (configurable)
-- **Target metrics**: CPU, Memory, Pod counts, Network usage
-- **Model types**: Random Forest, Linear Regression
-
----
-
-## Architecture
-
-### Data Flow
-1. **Raw CSV** → [`preprocess.py`](agent/preprocess.py) → **Partitioned Parquet**
-2. **Parquet files** → [`data_loader.py`](agent/data_loader.py) → **DuckDB tables**
-3. **DuckDB** → [`predictive_model.py`](agent/predictive_model.py) → **Trained ML models**
-4. **User queries** → [`csv_agent.py`](agent/csv_agent.py) → **SQL results**
-
-### Key Components
-- **[`DataLoader`](agent/data_loader.py)**: Handles data loading and SQL execution with DuckDB
-- **[`PredictiveModel`](agent/predictive_model.py)**: ML model training and evaluation
-- **[`CSVAgent`](agent/csv_agent.py)**: Natural language processing for data queries
-- **[`App`](app.py)**: Main Streamlit interface orchestrating all components
+Pipeline interno de modelagem ([predictive_model.py](agent/predictive_model.py)):
+- Ordenação temporal por `ocnr_dt_date`
+- Conversão de alvo para numérico
+- Lags: 1, 3, 5, 7
+- Janelas rolantes (mean/std, janela=5)
+- Features de tempo: hora, dia da semana, dia do mês, mês
+- Alinhamento X/y, limpeza de NaNs, índices temporais
+- Treino com modelos lineares/árvores; métricas: MSE, R² (e RMSE na UI estendida)
 
 ---
 
-## Technologies Used
+## Diagnósticos avançados (Feature Importance e SHAP)
 
-- **[Streamlit](https://streamlit.io/)** - Web application framework
-- **[DuckDB](https://duckdb.org/)** - In-process analytical database
-- **[Dask](https://dask.org/)** - Parallel computing and large data processing
-- **[Groq API](https://console.groq.com/)** - Large Language Model integration
-- **[scikit-learn](https://scikit-learn.org/)** - Machine learning algorithms
-- **[Pandas](https://pandas.pydata.org/)** - Data manipulation and analysis
-- **[PyArrow](https://arrow.apache.org/docs/python/)** - Parquet file processing
-- **[Seaborn/Matplotlib](https://seaborn.pydata.org/)** - Data visualization
-
----
-
-## Performance Considerations
-
-### Large Dataset Handling
-- Use Dask preprocessing for files >1GB
-- Parquet format provides 3-10x faster loading than CSV
-- Namespace partitioning enables selective data loading
-- Configurable sample sizes prevent memory overflow
-
-### Query Optimization
-- DuckDB provides columnar storage benefits
-- Automatic query optimization and vectorization
-- In-memory processing for maximum speed
-- PIVOT operations for feature engineering
+- Importância de features:
+  - Modelos de árvore: `feature_importances_` (barplot ordenado)
+  - Modelos lineares: coeficientes (tabela ordenada)
+- SHAP (para `random_forest`, `xgboost`, `lightgbm`):
+  - `TreeExplainer` + `summary_plot (dot)` para impacto local/global
+  - Útil para entender como cada métrica influencia as previsões
+- Observação: SHAP pode ser custoso em CPU/memória; reduza o tamanho de amostra se necessário.
 
 ---
 
-## Troubleshooting
+## Ajustes de desempenho
 
-### Common Issues
-1. **Memory errors during processing**: Reduce block size in [`preprocess.py`](agent/preprocess.py)
-2. **API connection failures**: Verify Groq API key in `.env` file
-3. **Empty results**: Check namespace selection and data availability
-4. **Model training errors**: Ensure sufficient data and valid target columns
-
-### Debug Mode
-Enable detailed logging by running:
-```bash
-python agent/preprocess.py
-```
-Check the Dask dashboard link in the console output for monitoring.
+- Pré-processamento:
+  - Ajuste `blocksize` no Dask (p.ex. 64MB) para equilibrar memória/velocidade
+  - Parquet + particionamento por `ocnr_tx_namespace` acelera filtros
+- Consultas:
+  - Use LIMIT e um conjunto enxuto de métricas no PIVOT
+  - Prefira scans de Parquet a CSV em produção
+- Modelos:
+  - Ajuste `sample_size` no carregamento para controlar custo de treino
+  - XGBoost/LightGBM: `n_jobs=-1` para paralelismo
 
 ---
 
-## Credits
+## Solução de problemas
 
-Made with ❤️ by [Lucas Galvão Freitas](https://github.com/devgalvas)
+- “Diretório Parquet não existe”
+  - Corrija o caminho no sidebar (ou ajuste `PARQUET_DEFAULT_PATH` em [config.py](config.py))
+  - Gere os Parquets: `python agent/preprocess.py`
+- “Falha ao executar PIVOT”
+  - Verifique colunas: `ocnr_dt_date`, `ocnr_tx_namespace`, `ocnr_tx_query`, `ocnr_nm_result`
+  - Cheque se há dados no namespace selecionado
+- “R² negativo / erros altos”
+  - Aumente a janela (mais linhas)
+  - Revise a métrica-alvo e a sazonalidade
+- “Erro com SHAP”
+  - Instale `shap` e confirme compatibilidade da versão do XGBoost/LightGBM
+  - Reduza a amostra para o cálculo SHAP
 
 ---
 
-## License
+## Referências de arquivos
 
-MIT License
+- App Streamlit: [app.py](app.py)
+  - Cache/ingestão/PIVOT: `load_data_and_get_schema`, `get_namespaces_from_filesystem`, `get_pivoted_dataframe_for_training`
+- Data loader (DuckDB): [`agent.data_loader.DataLoader`](agent/data_loader.py)
+- Modelagem: [`agent.predictive_model.PredictiveModel`](agent/predictive_model.py)
+- Configurações (paths/modelos/alvos): [config.py](config.py)
+- Pipeline CSV → Parquet: [agent/preprocess.py](agent/preprocess.py)
+
+---
+
+## Licença
