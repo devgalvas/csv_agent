@@ -5,12 +5,10 @@ import shap
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
-# --- Importações Modificadas ---
 from agent.predictive_model import PredictiveModel
 from config import MODEL_OPTIONS, TARGET_OPTIONS, METRICS_TO_PIVOT
 from utils import get_namespaces_from_filesystem, get_pivoted_dataframe_for_training, get_pivoted_dataframe_for_testing, get_single_metric_data
-from analysis import calculate_anomaly_bands, plot_anomaly_detection_graph # NOVA IMPORTAÇÃO
-# --------------------------------
+from analysis import calculate_anomaly_bands, plot_anomaly_detection_graph 
 
 def apply_custom_styling():
     """Aplica o CSS customizado para a aplicação."""
